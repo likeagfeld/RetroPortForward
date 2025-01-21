@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 
+
 // Mock PyWebView API for development
 if (process.env.NODE_ENV === 'development' && !window.pywebview) {
   window.pywebview = {
@@ -16,6 +17,18 @@ if (process.env.NODE_ENV === 'development' && !window.pywebview) {
     }
   };
 }
+
+const testBackendConnection = async () => {
+  try {
+    console.log("Testing backend connection...");
+    const response = await window.pywebview.api.echo("Testing connection");
+    console.log("Backend response:", response);
+    return true;
+  } catch (error) {
+    console.error("Backend connection test failed:", error);
+    return false;
+  }
+};
 
 const GameControllerIcon = () => (
   <svg 
@@ -101,68 +114,65 @@ const PortForwardUI: React.FC = () => {
     'Huawei', 'Fios-G1100', 'Generic'
   ];
   const handleSetup = async () => {
-    // Validate inputs
-    if (!credentials.username || !credentials.password) {
-      setSetupStatus({
-        state: 'error',
-        message: 'Please enter router username and password',
-        details: null
-      });
-      return;
-    }
-
-    const config: RouterConfig = {
-      console: selectedConsole || '',
-      targetDevice,
-      routerType: routerType || '',
-      routerIP: manualIP || undefined,
-      credentials
-    };
-    
-    console.log('Starting setup with config:', JSON.stringify(config, null, 2));
-    
-    // First switch to setup progress step
-    setStep('setup-progress');
-    setSetupStatus({ 
-      state: 'progress', 
-      message: 'Configuring port forwarding...', 
-      details: null 
+  // Validate inputs
+  if (!credentials.username || !credentials.password) {
+    setSetupStatus({
+      state: 'error',
+      message: 'Please enter router username and password',
+      details: null
     });
-    
-    // Check if PyWebView API is available
-    if (!window.pywebview || !window.pywebview.api || typeof window.pywebview.api.start_port_forward !== 'function') {
-      console.error('PyWebView API not available');
+    return;
+  }
+
+  const config: RouterConfig = {
+    console: selectedConsole || '',
+    targetDevice,
+    routerType: routerType || '',
+    routerIP: manualIP || undefined,
+    credentials
+  };
+
+  console.log('Starting setup with config:', JSON.stringify(config, null, 2));
+
+  // First switch to setup progress step
+  setStep('setup-progress');
+  setSetupStatus({ 
+    state: 'progress', 
+    message: 'Configuring port forwarding...', 
+    details: null 
+  });
+
+  try {
+    const response = await window.pywebview.api.start_port_forward(config);
+    console.log('Setup response:', JSON.stringify(response, null, 2));
+
+    if (response && typeof response === 'object') {
+      if (response.success) {
+        setSetupStatus({
+          state: 'success',
+          message: 'Port forwarding configured successfully!',
+          details: response
+        });
+      } else {
+        setSetupStatus({
+          state: 'error',
+          message: response.error || 'Unknown error occurred',
+          details: response
+        });
+      }
+    } else {
+      throw new Error('Invalid response from backend');
+    }
+  } catch (error) {
+    console.error('Complete error object:', error);
+
+    if (error.message.includes('Unsupported router type')) {
       setSetupStatus({
         state: 'error',
-        message: 'PyWebView API is not available. Are you running this in a PyWebView environment?',
-        details: null
+        message: `The router type "${config.routerType}" is not supported.`,
+        details: { error: String(error) } as SetupResponse
       });
-      return;
-    }
-
-    try {
-      const response = await window.pywebview.api.start_port_forward(config);
-      console.log('Setup response:', JSON.stringify(response, null, 2));
-
-      if (response && typeof response === 'object') {
-        if (response.success) {
-          setSetupStatus({
-            state: 'success',
-            message: 'Port forwarding configured successfully!',
-            details: response
-          });
-        } else {
-          setSetupStatus({
-            state: 'error',
-            message: response.error || 'Unknown error occurred',
-            details: response
-          });
-        }
-      } else {
-        throw new Error('Invalid response from backend');
-      }
-    } catch (error) {
-      console.error('Complete error object:', error);
+    } else {
       setSetupStatus({
         state: 'error',
         message: error instanceof Error 
@@ -171,8 +181,11 @@ const PortForwardUI: React.FC = () => {
         details: { error: String(error) } as SetupResponse
       });
     }
-  };
+  }
+};
 
+  
+  
   const renderConsoleSelect = () => (
     <div className="space-y-6">
       <p className="text-gray-600 text-center">
@@ -307,6 +320,34 @@ const PortForwardUI: React.FC = () => {
     </div>
   );
 
+  const handlePortForward = async (data) => {
+  try {
+    // Test connection first
+    const isConnected = await testBackendConnection();
+    if (!isConnected) {
+      throw new Error("Backend connection test failed");
+    }
+
+    // Make the actual port forward call
+    console.log("Sending data to backend:", data);
+    const response = await window.pywebview.api.start_port_forward(data);
+    console.log("Received response:", response);
+
+    if (response.success) {
+      // Handle success
+      console.log("Port forwarding successful");
+      return response;
+    } else {
+      // Handle error
+      console.error("Port forwarding failed:", response.error);
+      throw new Error(response.error);
+    }
+  } catch (error) {
+    console.error("Error in port forwarding:", error);
+    throw error;
+  }
+};
+
   const renderRouterLogin = () => (
     <div className="max-w-md mx-auto space-y-6">
       <p className="text-gray-600 text-center">
@@ -431,7 +472,7 @@ const PortForwardUI: React.FC = () => {
               Retro Console Port Forward Setup
             </h1>
             <div className="mt-2 text-sm text-gray-500">
-              <div>Version 0.4</div>
+              <div>Version 0.5</div>
               <div>Created by @LikeAGFeld</div>
             </div>
           </div>
