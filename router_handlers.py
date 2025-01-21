@@ -69,14 +69,25 @@ class RouterHandler:
             response = self.session.get(f"http://{self.router_ip}/", timeout=5)
             return response.status_code < 400
         except Exception as e:
-            logging.error(f"Router connection test failed: {str(e)}")
+            log_message(f"Router connection test failed: {str(e)}")
             return False
 
     def login(self, username, password):
-        raise NotImplementedError()
+        try:
+            # Your login implementation
+            pass
+        except Exception as e:
+            log_message(f"Login error: {str(e)}")
+            return False
 
     def setup_port_forward(self, client_ip, port_rules):
-        raise NotImplementedError()
+        try:
+            log_message("Setting up port forwarding rules...")
+            # Your port forwarding implementation
+            pass
+        except Exception as e:
+            log_message(f"Error setting up port forwarding: {str(e)}")
+            return False
 
 class ASUSHandler(RouterHandler):
     def login(self, username, password):
@@ -137,24 +148,34 @@ class FiosG1100Handler(RouterHandler):
 
     def setup_port_forward(self, client_ip, port_rules):
         try:
-            for rule in port_rules:
-                data = {
-                    "description": f"DreamPi_{rule['protocol']}_{rule['external']}",
-                    "protocol": rule['protocol'],
-                    "destination_ip": client_ip,
-                    "destination_port": str(rule['internal']),
-                    "source_port": str(rule['external']),
-                    "enabled": True
-                }
-                response = self.session.post(
-                    f"https://{self.router_ip}/api/firewall/portforwarding",
-                    json=data
-                )
-                if response.status_code != 200:
-                    return False
-            return True
-        except Exception:
-            return False     
+            login_response = self.login(self.session.auth.username, self.session.auth.password)
+            if login_response and login_response.status_code == 200:
+                token = login_response.headers.get("Authorization")
+                
+                for rule in port_rules:
+                    data = {
+                        "description": f"DreamPi_{rule['protocol']}_{rule['external']}",
+                        "protocol": rule['protocol'],
+                        "externalPort": str(rule['external']),
+                        "internalPort": str(rule['internal']),
+                        "destinationIp": client_ip,
+                        "enabled": True
+                    }
+                    response = self.session.post(
+                        f"https://{self.router_ip}/api/firewall/portforwarding",
+                        json=data,
+                        headers={"Authorization": token}
+                    )
+                    if response.status_code != 200:
+                        logging.error(f"Port forwarding setup failed: {response.status_code} - {response.text}")
+                        return False
+                return True
+            else:
+                logging.error(f"Login failed: {login_response.status_code} - {login_response.text}")
+                return False
+        except Exception as e:
+            logging.error(f"Error setting up port forwarding: {str(e)}")
+            return False
             
 class TPLinkHandler(RouterHandler):
     def login(self, username, password):

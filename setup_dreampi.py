@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 import re
 import urllib3
+import logging
 from router_handlers import RouterHandlers 
 
 urllib3.disable_warnings()
@@ -235,14 +236,18 @@ def get_router_subnet_ip():
         return None
         
 class RouterManager:
-    def __init__(self):
+    def __init__(self, router_type=None):
         self.router_ip = None
-        self.router_type = None
+        self.router_type = router_type
         self.handler = None
         self.session = requests.Session()
         self.session.verify = False
+        
+        if router_type:
+            self.handler = RouterHandlers.get_handler(router_type)(self.session, self.router_ip)
 
     def find_router(self):
+        """Find router IP address"""
         try:
             if os.name == 'nt':  # Windows
                 output = subprocess.check_output('ipconfig', text=True)
@@ -258,7 +263,12 @@ class RouterManager:
                 return False
 
             log_message(f"Found router at {self.router_ip}")
-            return self.detect_router_type()
+            
+            # Update handler with router IP if we have one
+            if self.handler:
+                self.handler.router_ip = self.router_ip
+                
+            return True
         except subprocess.CalledProcessError as e:
             log_message(f"Error executing network commands: {str(e)}")
             return False
@@ -266,79 +276,8 @@ class RouterManager:
             log_message(f"Error finding router: {str(e)}")
             return False
 
-    def detect_router_type(self):
-        supported_brands = [
-            "Generic", "ASUS", "TP-Link", "Netgear", "Linksys", "D-Link", "Cisco", 
-            "Belkin", "Buffalo", "Zyxel", "Huawei", "Ubiquiti", "MikroTik",
-            "NETIS", "Tenda", "EnGenius", "Actiontec", "AirTies", "Arris",
-            "Motorola", "Sagemcom", "Thomson", "Technicolor", "Zoom", 
-            "Billion", "SmartRG", "Edimax", "Comtrend", "Pace", "Xiaomi", "Fios-G1100", "OpenWrt"
-        ]
-
-        # Try to auto-detect router type
-        detection_paths = {
-            '/': ['Generic'],
-            '/admin': ['Linksys', 'NETIS'],
-            '/webfig': ['MikroTik'],
-            '/cgi-bin/luci': ['OpenWrt', 'TP-Link'],
-            '/index.htm': ['TP-Link', 'D-Link'],
-            '/info/Login.htm': ['ASUS'],
-            '/GUI_logout.html': ['Netgear'],
-            '/admin.cgi': ['Buffalo'],
-            '/login.html': ['Huawei', 'ZyXEL'],
-            '/status': ['Ubiquiti'],
-            '/login.asp': ['Belkin'],
-            '/main.html': ['EnGenius'],
-            '/index.asp': ['Tenda'],
-            '/login': ['Cisco']
-        }
-
-        try:
-            for path, brands in detection_paths.items():
-                try:
-                    response = self.session.get(f"http://{self.router_ip}{path}", timeout=2)
-                    if response.status_code == 200:
-                        content = response.text.lower()
-                        for brand in brands:
-                            if brand.lower() in content:
-                                self.router_type = brand
-                                self.handler = RouterHandlers.get_handler(brand)(self.session, self.router_ip)
-                                log_message(f"Detected router type: {brand}")
-                                return True
-                except requests.RequestException:
-                    continue
-        except Exception as e:
-            log_message(f"Error during auto-detection: {str(e)}")
-
-        # If auto-detection fails, ask user to select
-        print("\nCould not automatically detect router type.")
-        print("Supported router brands:")
-        for i, brand in enumerate(supported_brands, 1):
-            print(f"{i}. {brand}")
-        
-        while True:
-            try:
-                choice = input("\nPlease enter the number of your router brand (or 'q' to quit): ").strip()
-                if choice.lower() == 'q':
-                    return False
-                
-                choice = int(choice)
-                if 1 <= choice <= len(supported_brands):
-                    self.router_type = supported_brands[choice - 1]
-                    self.handler = RouterHandlers.get_handler(self.router_type)(self.session, self.router_ip)
-                    log_message(f"Selected router type: {self.router_type}")
-                    return True
-                else:
-                    print("Please enter a valid number from the list")
-            except ValueError:
-                print("Please enter a valid number")
-            except Exception as e:
-                log_message(f"Error during router selection: {str(e)}")
-                return False
-        
-        return False
-
-    def login_to_router(self):
+    def login_to_router(self, username=None, password=None):
+        """Login to router with provided credentials"""
         if not self.handler:
             log_message("No router handler available")
             return False
@@ -346,28 +285,30 @@ class RouterManager:
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                username = input("Router admin username: ")
-                password = input("Router admin password: ")
-                
                 if self.handler.login(username, password):
                     log_message("Successfully logged into router")
                     return True
                 
-                print(f"Login failed. {max_attempts - attempt - 1} attempts remaining.")
+                log_message(f"Login failed. {max_attempts - attempt - 1} attempts remaining.")
             except Exception as e:
                 log_message(f"Login error: {str(e)}")
-                print(f"Login failed. {max_attempts - attempt - 1} attempts remaining.")
+                log_message(f"Login failed. {max_attempts - attempt - 1} attempts remaining.")
         
         return False
 
-    def setup_port_forward(self, client_ip, port_rules):
+    def setup_port_forward(self, target_device, console_type):
+        """Setup port forwarding for specified device and console"""
         if not self.handler:
             log_message("No router handler available")
             return False
 
         try:
             log_message("Setting up port forwarding rules...")
-            success = self.handler.setup_port_forward(client_ip, port_rules)
+            
+            # Get the appropriate port rules based on the console type
+            port_rules = self.get_port_rules(console_type)
+            
+            success = self.handler.setup_port_forward(target_device, port_rules)
             
             if success:
                 log_message("Successfully set up port forwarding rules")
@@ -375,19 +316,25 @@ class RouterManager:
             else:
                 log_message("Failed to set up port forwarding rules")
                 if self.router_type == "Generic":
-                    log_message("For Generic router types, please configure port forwarding manually:")
-                    print("\nRequired Port Forwarding Rules:")
-                    for rule in port_rules:
-                        print(f"- Protocol: {rule['protocol']}")
-                        print(f"  External Port: {rule['external']}")
-                        print(f"  Internal Port: {rule['internal']}")
-                        print(f"  Internal IP: {client_ip}")
-                        print()
+                    log_message("For Generic router types, please configure port forwarding manually through your router's web interface")
                 
             return success
         except Exception as e:
             log_message(f"Error setting up port forwarding: {str(e)}")
             return False
+
+    def get_port_rules(self, console_type):
+        """Get port forwarding rules for specified console type"""
+        if console_type == 'dreamcast':
+            return get_dreamcast_port_rules()
+        elif console_type == 'saturn':
+            return [
+                {"protocol": "TCP", "external": 65432, "internal": 65432},
+                {"protocol": "UDP", "external": 20001, "internal": 20001},
+                {"protocol": "UDP", "external": 20002, "internal": 20002}
+            ]
+        else:
+            return []
 
 def scan_dreampi_ports(network_prefix):
     """Scan for hosts with DreamPi's specific ports open."""
